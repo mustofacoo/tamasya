@@ -52,12 +52,28 @@
     <script type="module">
         const { createApp, ref, onMounted, computed, watch } = Vue;
         
-        // --- SUPABASE SETUP ---
+        // --- SUPABASE SETUP (DIPERBAIKI) ---
         let supabase = null;
         const SUPABASE_CONFIG = {
             url: 'https://btdguuhdyqrjfhjtzsfu.supabase.co',
             key: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ0ZGd1dWhkeXFyamZoanR6c2Z1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTUwODY2MjEsImV4cCI6MjA3MDY2MjYyMX0.HHhw5CZM8VegPKjrvARaYdgdQKY6fQyJny65Cy2ve6I',
-            enabled: true
+            enabled: true // ← DIUBAH MENJADI true
+        };
+
+        // Auto-initialize Supabase saat aplikasi dimuat
+        const autoInitSupabase = () => {
+            if (SUPABASE_CONFIG.url && SUPABASE_CONFIG.key && SUPABASE_CONFIG.enabled) {
+                try {
+                    supabase = window.supabase.createClient(SUPABASE_CONFIG.url, SUPABASE_CONFIG.key);
+                    console.log('✅ Supabase auto-connected successfully');
+                    return true;
+                } catch (error) {
+                    console.error('❌ Supabase auto-connection failed:', error);
+                    SUPABASE_CONFIG.enabled = false;
+                    return false;
+                }
+            }
+            return false;
         };
 
         // Initialize Supabase if config is provided
@@ -72,54 +88,87 @@
                     return true;
                 } catch (error) {
                     console.error('❌ Supabase connection failed:', error);
+                    SUPABASE_CONFIG.enabled = false;
                     return false;
                 }
             }
             return false;
         };
 
-        // Sync data to Supabase
-        const syncToSupabase = async (data) => {
-            if (!SUPABASE_CONFIG.enabled || !supabase) return false;
-            
-            try {
-                const { error } = await supabase
-                    .from('attendance_data')
-                    .upsert({
-                        id: 'app_data',
-                        data: data,
-                        updated_at: new Date().toISOString()
-                    });
-                
-                if (error) throw error;
-                console.log('✅ Data synced to Supabase');
-                return true;
-            } catch (error) {
-                console.error('❌ Supabase sync failed:', error);
+        // Sync data to Supabase dengan retry mechanism
+        const syncToSupabase = async (data, retries = 3) => {
+            if (!SUPABASE_CONFIG.enabled || !supabase) {
+                console.log('📝 Supabase not enabled, saving to localStorage only');
                 return false;
             }
+            
+            for (let attempt = 1; attempt <= retries; attempt++) {
+                try {
+                    console.log(`🔄 Syncing to Supabase (attempt ${attempt}/${retries})...`);
+                    
+                    const { error } = await supabase
+                        .from('attendance_data')
+                        .upsert({
+                            id: 'app_data',
+                            data: data,
+                            updated_at: new Date().toISOString()
+                        });
+                    
+                    if (error) throw error;
+                    
+                    console.log('✅ Data synced to Supabase successfully');
+                    return true;
+                    
+                } catch (error) {
+                    console.error(`❌ Supabase sync failed (attempt ${attempt}):`, error);
+                    
+                    if (attempt === retries) {
+                        console.error('❌ All sync attempts failed. Data saved locally only.');
+                        return false;
+                    }
+                    
+                    // Wait before retry
+                    await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+                }
+            }
+            
+            return false;
         };
 
-        // Load data from Supabase
+        // Load data from Supabase dengan error handling yang lebih baik
         const loadFromSupabase = async () => {
-            if (!SUPABASE_CONFIG.enabled || !supabase) return null;
+            if (!SUPABASE_CONFIG.enabled || !supabase) {
+                console.log('📖 Supabase not enabled, loading from localStorage');
+                return null;
+            }
             
             try {
+                console.log('🔄 Loading data from Supabase...');
+                
                 const { data, error } = await supabase
                     .from('attendance_data')
                     .select('data')
                     .eq('id', 'app_data')
                     .single();
                 
-                if (error && error.code !== 'PGRST116') throw error;
+                if (error) {
+                    if (error.code === 'PGRST116') {
+                        console.log('📝 No data found in Supabase, will create new');
+                        return null;
+                    }
+                    throw error;
+                }
                 
-                if (data) {
-                    console.log('✅ Data loaded from Supabase');
+                if (data && data.data) {
+                    console.log('✅ Data loaded from Supabase successfully');
                     return data.data;
                 }
+                
                 return null;
+                
             } catch (error) {
                 console.error('❌ Supabase load failed:', error);
+                console.log('📖 Falling back to localStorage');
                 return null;
             }
         };
@@ -154,8 +203,8 @@
         const initialData = {
             adminPassword: 'admin',
             supabaseConfig: {
-                url: '',
-                key: ''
+                url: SUPABASE_CONFIG.url,
+                key: SUPABASE_CONFIG.key
             },
             locations: [
                 { id: Date.now(), name: "Masjid Al-Ikhlas" },
@@ -189,6 +238,8 @@
         };
 
         async function loadData() {
+            console.log('🔄 Loading application data...');
+            
             // Try to load from Supabase first
             const supabaseData = await loadFromSupabase();
             if (supabaseData) {
@@ -196,10 +247,12 @@
                 if (!supabaseData.monthlyAttendance[getCurrentMonth()]) {
                     supabaseData.monthlyAttendance[getCurrentMonth()] = {};
                 }
+                console.log('✅ Data loaded from Supabase');
                 return supabaseData;
             }
 
             // Fallback to localStorage
+            console.log('📖 Loading from localStorage...');
             const savedData = localStorage.getItem(APP_STORAGE_KEY);
             if (savedData) {
                 const data = JSON.parse(savedData);
@@ -213,21 +266,34 @@
                 }
                 // Ensure supabase config exists
                 if (!data.supabaseConfig) {
-                    data.supabaseConfig = { url: '', key: '' };
+                    data.supabaseConfig = { 
+                        url: SUPABASE_CONFIG.url, 
+                        key: SUPABASE_CONFIG.key 
+                    };
                 }
+                console.log('✅ Data loaded from localStorage');
                 return data;
             }
             
+            console.log('📝 Creating initial data...');
             saveData(initialData);
             return initialData;
         }
 
         async function saveData(data) {
-            // Save to localStorage
+            console.log('💾 Saving data...');
+            
+            // Save to localStorage first (always works)
             localStorage.setItem(APP_STORAGE_KEY, JSON.stringify(data));
+            console.log('✅ Data saved to localStorage');
             
             // Save to Supabase if enabled
-            await syncToSupabase(data);
+            const supabaseSuccess = await syncToSupabase(data);
+            if (supabaseSuccess) {
+                console.log('✅ Data saved to both localStorage and Supabase');
+            } else {
+                console.log('⚠️ Data saved to localStorage only (Supabase failed)');
+            }
         }
 
         // Get attendance for specific month and member
@@ -1093,6 +1159,9 @@
                 // Initialize app
                 onMounted(async () => {
                     try {
+                        // Auto-initialize Supabase first
+                        autoInitSupabase();
+                        
                         const data = await loadData();
                         
                         // Initialize Supabase if config exists
