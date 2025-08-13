@@ -1,0 +1,1195 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Aplikasi Absensi Bulanan</title>
+    
+    <!-- Tailwind CSS for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Google Fonts: Inter -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <!-- Vue.js 3 -->
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+
+    <!-- Supabase -->
+    <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+
+    <style>
+        /* Custom styles for a cleaner look */
+        body {
+            font-family: 'Inter', sans-serif;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+        /* Custom checkbox style */
+        .custom-checkbox:checked {
+            background-image: url("data:image/svg+xml,%3csvg viewBox='0 0 16 16' fill='white' xmlns='http://www.w3.org/2000/svg'%3e%3cpath d='M12.207 4.793a1 1 0 010 1.414l-5 5a1 1 0 01-1.414 0l-2-2a1 1 0 011.414-1.414L6.5 9.086l4.293-4.293a1 1 0 011.414 0z'/%3e%3c/svg%3e");
+            background-color: #2563eb; /* bg-blue-600 */
+            border-color: #2563eb;
+        }
+        .fade-enter-active, .fade-leave-active {
+            transition: opacity 0.3s ease;
+        }
+        .fade-enter-from, .fade-leave-to {
+            opacity: 0;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 dark:bg-gray-900 text-gray-800 dark:text-gray-200">
+
+    <div id="app" class="min-h-screen flex flex-col items-center justify-center p-4">
+        <!-- Main Application Container -->
+    </div>
+
+    <script type="module">
+        const { createApp, ref, onMounted, computed, watch } = Vue;
+        
+        // --- SUPABASE SETUP ---
+        let supabase = null;
+        const SUPABASE_CONFIG = {
+            url: '',
+            key: '',
+            enabled: false
+        };
+
+        // Initialize Supabase if config is provided
+        const initSupabase = (url, key) => {
+            if (url && key) {
+                try {
+                    supabase = window.supabase.createClient(url, key);
+                    SUPABASE_CONFIG.url = url;
+                    SUPABASE_CONFIG.key = key;
+                    SUPABASE_CONFIG.enabled = true;
+                    console.log('✅ Supabase connected successfully');
+                    return true;
+                } catch (error) {
+                    console.error('❌ Supabase connection failed:', error);
+                    return false;
+                }
+            }
+            return false;
+        };
+
+        // Sync data to Supabase
+        const syncToSupabase = async (data) => {
+            if (!SUPABASE_CONFIG.enabled || !supabase) return false;
+            
+            try {
+                const { error } = await supabase
+                    .from('attendance_data')
+                    .upsert({
+                        id: 'app_data',
+                        data: data,
+                        updated_at: new Date().toISOString()
+                    });
+                
+                if (error) throw error;
+                console.log('✅ Data synced to Supabase');
+                return true;
+            } catch (error) {
+                console.error('❌ Supabase sync failed:', error);
+                return false;
+            }
+        };
+
+        // Load data from Supabase
+        const loadFromSupabase = async () => {
+            if (!SUPABASE_CONFIG.enabled || !supabase) return null;
+            
+            try {
+                const { data, error } = await supabase
+                    .from('attendance_data')
+                    .select('data')
+                    .eq('id', 'app_data')
+                    .single();
+                
+                if (error && error.code !== 'PGRST116') throw error;
+                
+                if (data) {
+                    console.log('✅ Data loaded from Supabase');
+                    return data.data;
+                }
+                return null;
+            } catch (error) {
+                console.error('❌ Supabase load failed:', error);
+                return null;
+            }
+        };
+
+        // --- UTILITY FUNCTIONS ---
+        const getMonthKey = (date = new Date()) => {
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            return `${year}-${month}`;
+        };
+
+        const getMonthName = (monthKey) => {
+            const [year, month] = monthKey.split('-');
+            const date = new Date(year, month - 1);
+            return date.toLocaleDateString('id-ID', { month: 'long', year: 'numeric' });
+        };
+
+        const getCurrentMonth = () => getMonthKey();
+
+        const formatCurrency = (amount) => {
+            return new Intl.NumberFormat('id-ID', { 
+                style: 'currency', 
+                currency: 'IDR',
+                minimumFractionDigits: 0,
+                maximumFractionDigits: 0
+            }).format(amount);
+        };
+
+        // --- DATA MANAGEMENT ---
+        const APP_STORAGE_KEY = 'vue-monthly-attendance-app-v6';
+        
+        const initialData = {
+            adminPassword: 'admin',
+            supabaseConfig: {
+                url: '',
+                key: ''
+            },
+            locations: [
+                { id: Date.now(), name: "Masjid Al-Ikhlas" },
+                { id: Date.now() + 1, name: "Rumah Ustadz Ahmad" },
+                { id: Date.now() + 2, name: "Aula Pesantren" }
+            ],
+            groups: [
+                {
+                    id: Date.now(),
+                    name: "Ibnu Abbas",
+                    members: [
+                        { id: Date.now() + 1, name: "Maruf" },
+                        { id: Date.now() + 2, name: "Syamsul H" },
+                        
+                    ]
+                },
+                {
+                    id: Date.now() + 4,
+                    name: "Zaid bin Tsabit",
+                    members: [
+                        { id: Date.now() + 5, name: "Nurhadi" },
+                        { id: Date.now() + 6, name: "Roziqin" },
+                    ]
+                }
+            ],
+            // Monthly attendance data structure
+            monthlyAttendance: {
+                // Format: "YYYY-MM": { groupId: { location: string, members: { memberId: { status: string, paidDues: bool, juzRecited: string } } } }
+                [getCurrentMonth()]: {}
+            }
+        };
+
+        async function loadData() {
+            // Try to load from Supabase first
+            const supabaseData = await loadFromSupabase();
+            if (supabaseData) {
+                // Ensure current month exists
+                if (!supabaseData.monthlyAttendance[getCurrentMonth()]) {
+                    supabaseData.monthlyAttendance[getCurrentMonth()] = {};
+                }
+                return supabaseData;
+            }
+
+            // Fallback to localStorage
+            const savedData = localStorage.getItem(APP_STORAGE_KEY);
+            if (savedData) {
+                const data = JSON.parse(savedData);
+                // Ensure current month exists
+                if (!data.monthlyAttendance[getCurrentMonth()]) {
+                    data.monthlyAttendance[getCurrentMonth()] = {};
+                }
+                // Ensure locations array exists
+                if (!data.locations) {
+                    data.locations = initialData.locations;
+                }
+                // Ensure supabase config exists
+                if (!data.supabaseConfig) {
+                    data.supabaseConfig = { url: '', key: '' };
+                }
+                return data;
+            }
+            
+            saveData(initialData);
+            return initialData;
+        }
+
+        async function saveData(data) {
+            // Save to localStorage
+            localStorage.setItem(APP_STORAGE_KEY, JSON.stringify(data));
+            
+            // Save to Supabase if enabled
+            await syncToSupabase(data);
+        }
+
+        // Get attendance for specific month and member
+        function getAttendanceForMonth(data, monthKey, groupId, memberId) {
+            return data.monthlyAttendance[monthKey]?.[groupId]?.members?.[memberId] || { 
+                status: 'absent', 
+                paidDues: false, 
+                juzRecited: ''
+            };
+        }
+
+        // Get group location for specific month
+        function getGroupLocationForMonth(data, monthKey, groupId) {
+            return data.monthlyAttendance[monthKey]?.[groupId]?.location || '';
+        }
+
+        // Set attendance for specific month and member
+        function setAttendanceForMonth(data, monthKey, groupId, memberId, attendance) {
+            if (!data.monthlyAttendance[monthKey]) {
+                data.monthlyAttendance[monthKey] = {};
+            }
+            if (!data.monthlyAttendance[monthKey][groupId]) {
+                data.monthlyAttendance[monthKey][groupId] = { location: '', members: {} };
+            }
+            if (!data.monthlyAttendance[monthKey][groupId].members) {
+                data.monthlyAttendance[monthKey][groupId].members = {};
+            }
+            data.monthlyAttendance[monthKey][groupId].members[memberId] = attendance;
+        }
+
+        // Set group location for specific month
+        function setGroupLocationForMonth(data, monthKey, groupId, location) {
+            if (!data.monthlyAttendance[monthKey]) {
+                data.monthlyAttendance[monthKey] = {};
+            }
+            if (!data.monthlyAttendance[monthKey][groupId]) {
+                data.monthlyAttendance[monthKey][groupId] = { location: '', members: {} };
+            }
+            data.monthlyAttendance[monthKey][groupId].location = location;
+        }
+
+        // --- COMPONENTS ---
+
+        // Component: Supabase Setup
+        const SupabaseSetup = {
+            props: ['data'],
+            emits: ['update-data', 'close'],
+            setup(props, { emit }) {
+                const localData = ref(JSON.parse(JSON.stringify(props.data)));
+                const supabaseUrl = ref(localData.value.supabaseConfig?.url || '');
+                const supabaseKey = ref(localData.value.supabaseConfig?.key || '');
+                const isConnecting = ref(false);
+                const connectionStatus = ref('');
+                const isConnected = ref(SUPABASE_CONFIG.enabled);
+
+                const testConnection = async () => {
+                    if (!supabaseUrl.value || !supabaseKey.value) {
+                        connectionStatus.value = 'URL dan Key harus diisi';
+                        return;
+                    }
+
+                    isConnecting.value = true;
+                    connectionStatus.value = 'Menguji koneksi...';
+
+                    const success = initSupabase(supabaseUrl.value, supabaseKey.value);
+                    
+                    if (success) {
+                        try {
+                            // Test connection with a simple query
+                            const { error } = await supabase.from('attendance_data').select('id').limit(1);
+                            
+                            if (error && error.code !== 'PGRST116') {
+                                throw error;
+                            }
+
+                            localData.value.supabaseConfig = {
+                                url: supabaseUrl.value,
+                                key: supabaseKey.value
+                            };
+                            
+                            connectionStatus.value = '✅ Koneksi berhasil! Data akan sinkron otomatis.';
+                            isConnected.value = true;
+                            
+                            emit('update-data', localData.value);
+                            
+                            setTimeout(() => {
+                                emit('close');
+                            }, 2000);
+
+                        } catch (error) {
+                            connectionStatus.value = `❌ Koneksi gagal: ${error.message}`;
+                            isConnected.value = false;
+                        }
+                    } else {
+                        connectionStatus.value = '❌ Konfigurasi Supabase tidak valid';
+                        isConnected.value = false;
+                    }
+
+                    isConnecting.value = false;
+                };
+
+                const disconnect = () => {
+                    localData.value.supabaseConfig = { url: '', key: '' };
+                    supabaseUrl.value = '';
+                    supabaseKey.value = '';
+                    isConnected.value = false;
+                    SUPABASE_CONFIG.enabled = false;
+                    supabase = null;
+                    connectionStatus.value = 'Disconnected dari Supabase';
+                    emit('update-data', localData.value);
+                };
+
+                return {
+                    supabaseUrl,
+                    supabaseKey,
+                    isConnecting,
+                    connectionStatus,
+                    isConnected,
+                    testConnection,
+                    disconnect
+                };
+            },
+            template: `
+                <div class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+                    <div class="w-full max-w-md bg-white dark:bg-gray-800 rounded-xl shadow-lg p-6 space-y-6">
+                        <div class="flex justify-between items-center">
+                            <h3 class="text-xl font-bold">Setup Supabase</h3>
+                            <button @click="$emit('close')" class="text-gray-500 hover:text-gray-700">
+                                <i data-lucide="x"></i>
+                            </button>
+                        </div>
+
+                        <div class="space-y-4">
+                            <div>
+                                <label class="block text-sm font-medium mb-1">Supabase URL</label>
+                                <input v-model="supabaseUrl" type="url" placeholder="https://xxx.supabase.co" 
+                                       class="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 text-sm">
+                            </div>
+                            
+                            <div>
+                                <label class="block text-sm font-medium mb-1">Supabase Anon Key</label>
+                                <textarea v-model="supabaseKey" placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." 
+                                          class="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 text-sm h-20 resize-none"></textarea>
+                            </div>
+
+                            <div class="text-xs text-gray-600 dark:text-gray-400 bg-gray-50 dark:bg-gray-700 p-3 rounded">
+                                <p><strong>Setup Database:</strong></p>
+                                <p>1. Buat tabel <code>attendance_data</code></p>
+                                <p>2. Kolom: <code>id</code> (text, PK), <code>data</code> (jsonb), <code>updated_at</code> (timestamp)</p>
+                                <p>3. Enable RLS dan buat policy untuk anonymous access</p>
+                            </div>
+
+                            <div v-if="connectionStatus" class="text-sm p-3 rounded" 
+                                 :class="connectionStatus.includes('✅') ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'">
+                                {{ connectionStatus }}
+                            </div>
+                        </div>
+
+                        <div class="flex gap-3">
+                            <button v-if="!isConnected" @click="testConnection" :disabled="isConnecting"
+                                    class="flex-1 py-2 px-4 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 disabled:opacity-50 transition">
+                                {{ isConnecting ? 'Menguji...' : 'Test & Connect' }}
+                            </button>
+                            <button v-if="isConnected" @click="disconnect"
+                                    class="flex-1 py-2 px-4 bg-red-600 text-white rounded-lg font-semibold hover:bg-red-700 transition">
+                                Disconnect
+                            </button>
+                            <button @click="$emit('close')" class="py-2 px-4 border rounded-lg font-semibold hover:bg-gray-100 transition">
+                                Close
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `
+        };
+
+        // Component: Admin Login
+        const AdminLogin = {
+            emits: ['login-success', 'back'],
+            setup(props, { emit }) {
+                const password = ref('');
+                const error = ref(false);
+
+                const attemptLogin = async () => {
+                    const appData = await loadData();
+                    if (password.value === appData.adminPassword) {
+                        error.value = false;
+                        emit('login-success');
+                    } else {
+                        error.value = true;
+                    }
+                };
+
+                return { password, error, attemptLogin, emit };
+            },
+            template: `
+                <div class="w-full max-w-sm bg-white dark:bg-gray-800 rounded-xl shadow-lg p-8 space-y-6">
+                    <div class="text-center">
+                        <h2 class="text-2xl font-bold text-gray-900 dark:text-white">Login Admin</h2>
+                        <p class="text-gray-500 dark:text-gray-400 mt-1">Masukkan kata sandi untuk mengelola data.</p>
+                    </div>
+                    <form @submit.prevent="attemptLogin" class="space-y-4">
+                        <div>
+                            <label for="password" class="sr-only">Password</label>
+                            <input v-model="password" id="password" name="password" type="password" required
+                                   class="w-full px-4 py-3 rounded-lg border focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition"
+                                   :class="error ? 'border-red-500' : 'border-gray-300 dark:border-gray-600'"
+                                   placeholder="Kata Sandi">
+                            <p v-if="error" class="text-red-500 text-sm mt-1">Kata sandi salah.</p>
+                        </div>
+                        <div class="flex flex-col sm:flex-row gap-3">
+                            <button type="button" @click="$emit('back')" class="w-full flex-1 justify-center py-3 px-4 border border-gray-300 dark:border-gray-600 rounded-lg text-sm font-semibold hover:bg-gray-100 dark:hover:bg-gray-700 transition">
+                                Kembali
+                            </button>
+                            <button type="submit" class="w-full flex-1 justify-center py-3 px-4 border border-transparent rounded-lg text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition">
+                                Masuk
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            `
+        };
+
+        // Component: Admin Panel
+        const AdminPanel = {
+            props: ['data'],
+            emits: ['update-data', 'logout'],
+            setup(props, { emit }) {
+                const localData = ref(JSON.parse(JSON.stringify(props.data)));
+                const newGroupName = ref('');
+                const newMemberName = ref('');
+                const newLocationName = ref('');
+                const selectedGroupId = ref(localData.value.groups.length > 0 ? localData.value.groups[0].id : null);
+                const showSupabaseSetup = ref(false);
+
+                const selectedGroup = computed(() => {
+                    return localData.value.groups.find(g => g.id === selectedGroupId.value);
+                });
+
+                const isSupabaseConnected = computed(() => {
+                    return SUPABASE_CONFIG.enabled;
+                });
+
+                const addGroup = async () => {
+                    if (newGroupName.value.trim()) {
+                        localData.value.groups.push({
+                            id: Date.now(),
+                            name: newGroupName.value.trim(),
+                            members: []
+                        });
+                        newGroupName.value = '';
+                        await saveAndEmit();
+                    }
+                };
+                
+                const deleteGroup = async (groupId) => {
+                    if (confirm('Apakah Anda yakin ingin menghapus kelompok ini? Semua anggota dan data absensi akan terhapus.')) {
+                        localData.value.groups = localData.value.groups.filter(g => g.id !== groupId);
+                        
+                        // Remove attendance data for this group
+                        Object.keys(localData.value.monthlyAttendance).forEach(month => {
+                            delete localData.value.monthlyAttendance[month][groupId];
+                        });
+                        
+                        if (selectedGroupId.value === groupId) {
+                            selectedGroupId.value = localData.value.groups.length > 0 ? localData.value.groups[0].id : null;
+                        }
+                        await saveAndEmit();
+                    }
+                };
+
+                const addMember = async () => {
+                    if (newMemberName.value.trim() && selectedGroup.value) {
+                        selectedGroup.value.members.push({
+                            id: Date.now(),
+                            name: newMemberName.value.trim()
+                        });
+                        newMemberName.value = '';
+                        await saveAndEmit();
+                    }
+                };
+                
+                const deleteMember = async (memberId) => {
+                    if (selectedGroup.value) {
+                       selectedGroup.value.members = selectedGroup.value.members.filter(m => m.id !== memberId);
+                       
+                       // Remove attendance data for this member
+                       Object.keys(localData.value.monthlyAttendance).forEach(month => {
+                           if (localData.value.monthlyAttendance[month][selectedGroup.value.id]?.members) {
+                               delete localData.value.monthlyAttendance[month][selectedGroup.value.id].members[memberId];
+                           }
+                       });
+                       
+                       await saveAndEmit();
+                    }
+                };
+
+                const addLocation = async () => {
+                    if (newLocationName.value.trim()) {
+                        localData.value.locations.push({
+                            id: Date.now(),
+                            name: newLocationName.value.trim()
+                        });
+                        newLocationName.value = '';
+                        await saveAndEmit();
+                    }
+                };
+
+                const deleteLocation = async (locationId) => {
+                    if (confirm('Apakah Anda yakin ingin menghapus lokasi ini?')) {
+                        localData.value.locations = localData.value.locations.filter(l => l.id !== locationId);
+                        await saveAndEmit();
+                    }
+                };
+
+                const saveAndEmit = async () => {
+                    emit('update-data', localData.value);
+                };
+
+                const handleSupabaseUpdate = (newData) => {
+                    localData.value = newData;
+                    emit('update-data', newData);
+                };
+
+                return { 
+                    localData, 
+                    newGroupName, 
+                    newMemberName, 
+                    newLocationName,
+                    selectedGroupId, 
+                    selectedGroup,
+                    showSupabaseSetup,
+                    isSupabaseConnected,
+                    addGroup, 
+                    deleteGroup, 
+                    addMember, 
+                    deleteMember, 
+                    addLocation,
+                    deleteLocation,
+                    saveAndEmit,
+                    handleSupabaseUpdate,
+                    emit 
+                };
+            },
+            template: `
+                <div class="w-full max-w-4xl bg-white dark:bg-gray-800 rounded-xl shadow-lg p-6 md:p-8 space-y-8">
+                    <div class="flex justify-between items-center">
+                        <h2 class="text-2xl md:text-3xl font-bold text-gray-900 dark:text-white">Panel Admin</h2>
+                        <div class="flex items-center gap-3">
+                            <button @click="showSupabaseSetup = true" 
+                                    :class="['flex items-center gap-2 py-2 px-4 rounded-lg text-sm font-semibold transition', 
+                                             isSupabaseConnected ? 'bg-green-100 text-green-800 border border-green-300' : 'bg-gray-100 border border-gray-300 hover:bg-gray-200']">
+                                <i data-lucide="database"></i>
+                                <span>{{ isSupabaseConnected ? 'Supabase Connected' : 'Setup Supabase' }}</span>
+                            </button>
+                            <button @click="$emit('logout')" class="flex items-center gap-2 py-2 px-4 border border-gray-300 dark:border-gray-600 rounded-lg text-sm font-semibold hover:bg-gray-100 dark:hover:bg-gray-700 transition">
+                                <i data-lucide="log-out"></i>
+                                <span>Keluar</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Manage Locations -->
+                    <div class="space-y-4">
+                        <h3 class="text-xl font-semibold">Kelola Lokasi Tasmik</h3>
+                        <form @submit.prevent="addLocation" class="flex gap-3">
+                            <input v-model="newLocationName" type="text" placeholder="Nama lokasi baru" class="flex-grow px-4 py-2 rounded-lg border border-gray-300 dark:border-gray-600 focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700">
+                            <button type="submit" class="py-2 px-4 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 transition">Tambah</button>
+                        </form>
+                        <ul class="space-y-2">
+                            <li v-for="location in localData.locations" :key="location.id" class="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-700 rounded-lg">
+                                <input v-model="location.name" @change="saveAndEmit" class="font-medium bg-transparent w-full mr-4 focus:outline-none focus:ring-1 focus:ring-blue-500 rounded px-1"/>
+                                <button @click="deleteLocation(location.id)" class="text-red-500 hover:text-red-700">
+                                    <i data-lucide="trash-2"></i>
+                                </button>
+                            </li>
+                        </ul>
+                    </div>
+
+                    <hr class="border-gray-200 dark:border-gray-700"/>
+
+                    <!-- Manage Groups -->
+                    <div class="space-y-4">
+                        <h3 class="text-xl font-semibold">Kelola Kelompok</h3>
+                        <form @submit.prevent="addGroup" class="flex gap-3">
+                            <input v-model="newGroupName" type="text" placeholder="Nama kelompok baru" class="flex-grow px-4 py-2 rounded-lg border border-gray-300 dark:border-gray-600 focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700">
+                            <button type="submit" class="py-2 px-4 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 transition">Tambah</button>
+                        </form>
+                        <div class="space-y-3">
+                            <div v-for="group in localData.groups" :key="group.id" class="flex items-center justify-between p-4 bg-gray-50 dark:bg-gray-700 rounded-lg">
+                                <input v-model="group.name" @change="saveAndEmit" class="font-medium bg-transparent w-full mr-4 focus:outline-none focus:ring-1 focus:ring-blue-500 rounded px-1 text-lg"/>
+                                <button @click="deleteGroup(group.id)" class="text-red-500 hover:text-red-700">
+                                    <i data-lucide="trash-2"></i>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <hr class="border-gray-200 dark:border-gray-700"/>
+
+                    <!-- Manage Members -->
+                    <div class="space-y-4" v-if="localData.groups.length > 0">
+                        <h3 class="text-xl font-semibold">Kelola Anggota</h3>
+                        <div class="flex flex-col md:flex-row gap-4 items-start">
+                            <div class="w-full md:w-1/3">
+                                <label for="group-select" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Pilih Kelompok</label>
+                                <select v-model="selectedGroupId" id="group-select" class="w-full p-2 rounded-lg border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700">
+                                    <option v-for="group in localData.groups" :key="group.id" :value="group.id">{{ group.name }}</option>
+                                </select>
+                            </div>
+
+                            <div class="w-full md:w-2/3" v-if="selectedGroup">
+                                <form @submit.prevent="addMember" class="flex gap-3 mb-4">
+                                    <input v-model="newMemberName" type="text" placeholder="Nama anggota baru" class="flex-grow px-4 py-2 rounded-lg border border-gray-300 dark:border-gray-600 focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700">
+                                    <button type="submit" class="py-2 px-4 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 transition">Tambah</button>
+                                </form>
+                                <ul class="space-y-2 max-h-60 overflow-y-auto pr-2">
+                                    <li v-for="member in selectedGroup.members" :key="member.id" class="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-700 rounded-lg">
+                                        <input v-model="member.name" @change="saveAndEmit" class="font-medium bg-transparent w-full mr-4 focus:outline-none focus:ring-1 focus:ring-blue-500 rounded px-1"/>
+                                        <button @click="deleteMember(member.id)" class="text-red-500 hover:text-red-700">
+                                            <i data-lucide="trash-2"></i>
+                                        </button>
+                                    </li>
+                                    <li v-if="selectedGroup.members.length === 0" class="text-center text-gray-500 py-4">
+                                        Belum ada anggota.
+                                    </li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Supabase Setup Modal -->
+                    <SupabaseSetup v-if="showSupabaseSetup" :data="localData" 
+                                   @update-data="handleSupabaseUpdate" 
+                                   @close="showSupabaseSetup = false" />
+                </div>
+            `
+        };
+
+        // Component: Dashboard View
+        const Dashboard = {
+            props: ['data'],
+            setup(props) {
+                const selectedMonth = ref(getCurrentMonth());
+                
+                const availableMonths = computed(() => {
+                    return Object.keys(props.data.monthlyAttendance).sort().reverse();
+                });
+
+                const stats = computed(() => {
+                    const monthData = props.data.monthlyAttendance[selectedMonth.value] || {};
+                    
+                    return props.data.groups.map(group => {
+                        const total = group.members.length;
+                        const groupData = monthData[group.id] || { location: '', members: {} };
+                        const location = groupData.location || '-';
+                        
+                        if (total === 0) {
+                            return { 
+                                id: group.id, 
+                                name: group.name,
+                                location: location,
+                                attendance: 0, 
+                                dues: 0, 
+                                total: 0,
+                                totalDuesAmount: 0,
+                                juzData: [],
+                                presentCount: 0,
+                                sickCount: 0,
+                                permissionCount: 0,
+                                absentCount: 0
+                            };
+                        }
+
+                        let presentCount = 0;
+                        let sickCount = 0;
+                        let permissionCount = 0;
+                        let absentCount = 0;
+                        let paidCount = 0;
+                        let juzData = [];
+
+                        group.members.forEach(member => {
+                            const memberData = groupData.members[member.id] || { 
+                                status: 'absent', 
+                                paidDues: false, 
+                                juzRecited: ''
+                            };
+                            
+                            switch(memberData.status) {
+                                case 'present': presentCount++; break;
+                                case 'sick': sickCount++; break;
+                                case 'permission': permissionCount++; break;
+                                default: absentCount++; break;
+                            }
+                            
+                            if (memberData.paidDues) paidCount++;
+                            if (memberData.juzRecited) {
+                                juzData.push({
+                                    name: member.name,
+                                    juz: memberData.juzRecited
+                                });
+                            }
+                        });
+
+                        return {
+                            id: group.id,
+                            name: group.name,
+                            location: location,
+                            attendance: Math.round((presentCount / total) * 100),
+                            dues: Math.round((paidCount / total) * 100),
+                            total: total,
+                            presentCount,
+                            sickCount,
+                            permissionCount,
+                            absentCount,
+                            paid: paidCount,
+                            totalDuesAmount: paidCount * 10000,
+                            juzData: juzData
+                        };
+                    });
+                });
+
+                const totalDuesAmount = computed(() => {
+                    return stats.value.reduce((sum, group) => sum + group.totalDuesAmount, 0);
+                });
+
+                return { selectedMonth, availableMonths, stats, totalDuesAmount, getMonthName, formatCurrency };
+            },
+            template: `
+                <div class="w-full max-w-5xl bg-white dark:bg-gray-800 rounded-xl shadow-lg p-6 md:p-8 space-y-6">
+                    <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                        <h2 class="text-2xl md:text-3xl font-bold text-gray-900 dark:text-white">Dashboard Laporan</h2>
+                        <div class="w-full sm:w-auto">
+                            <select v-model="selectedMonth" class="w-full sm:w-auto px-4 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-2 focus:ring-blue-500">
+                                <option v-for="month in availableMonths" :key="month" :value="month">
+                                    {{ getMonthName(month) }}
+                                </option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <!-- Total Summary -->
+                    <div class="bg-gradient-to-r from-green-500 to-blue-600 rounded-lg p-6 text-white">
+                        <h3 class="text-lg font-semibold mb-2">Total Iuran Terkumpul</h3>
+                        <p class="text-3xl font-bold">{{ formatCurrency(totalDuesAmount) }}</p>
+                        <p class="text-green-100 text-sm mt-1">{{ getMonthName(selectedMonth) }}</p>
+                    </div>
+                    
+                    <div v-if="stats.length === 0" class="text-center text-gray-500 py-8">
+                        Tidak ada data kelompok untuk ditampilkan.
+                    </div>
+                    <div v-else class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        <div v-for="group in stats" :key="group.id" class="bg-gray-50 dark:bg-gray-700/50 p-5 rounded-lg space-y-4">
+                            <div>
+                                <h3 class="font-bold text-lg">{{ group.name }}</h3>
+                                <p class="text-sm text-gray-600 dark:text-gray-400">
+                                    <i data-lucide="map-pin" class="inline w-4 h-4 mr-1"></i>
+                                    {{ group.location }}
+                                </p>
+                            </div>
+                            <div class="text-sm text-gray-600 dark:text-gray-400 mb-3">
+                                Total Anggota: {{ group.total }}
+                            </div>
+                            
+                            <!-- Detailed Attendance Stats -->
+                            <div class="grid grid-cols-2 gap-3 text-xs">
+                                <div class="flex items-center gap-2">
+                                    <div class="w-3 h-3 bg-green-500 rounded-full"></div>
+                                    <span>Hadir: {{ group.presentCount }}</span>
+                                </div>
+                                <div class="flex items-center gap-2">
+                                    <div class="w-3 h-3 bg-yellow-500 rounded-full"></div>
+                                    <span>Sakit: {{ group.sickCount }}</span>
+                                </div>
+                                <div class="flex items-center gap-2">
+                                    <div class="w-3 h-3 bg-blue-500 rounded-full"></div>
+                                    <span>Izin: {{ group.permissionCount }}</span>
+                                </div>
+                                <div class="flex items-center gap-2">
+                                    <div class="w-3 h-3 bg-red-500 rounded-full"></div>
+                                    <span>Alpha: {{ group.absentCount }}</span>
+                                </div>
+                            </div>
+                            
+                            <!-- Attendance Progress -->
+                            <div>
+                                <div class="flex justify-between mb-1">
+                                    <span class="text-sm font-medium">Kehadiran ({{ group.presentCount }}/{{ group.total }})</span>
+                                    <span class="text-sm font-medium">{{ group.attendance }}%</span>
+                                </div>
+                                <div class="w-full bg-gray-200 dark:bg-gray-600 rounded-full h-2.5">
+                                    <div class="bg-blue-600 h-2.5 rounded-full transition-all duration-300" :style="{ width: group.attendance + '%' }"></div>
+                                </div>
+                            </div>
+                            
+                            <!-- Dues Progress -->
+                            <div>
+                                <div class="flex justify-between mb-1">
+                                    <span class="text-sm font-medium">Iuran ({{ group.paid }}/{{ group.total }})</span>
+                                    <span class="text-sm font-medium">{{ group.dues }}%</span>
+                                </div>
+                                <div class="w-full bg-gray-200 dark:bg-gray-600 rounded-full h-2.5">
+                                    <div class="bg-green-500 h-2.5 rounded-full transition-all duration-300" :style="{ width: group.dues + '%' }"></div>
+                                </div>
+                                <div class="mt-1">
+                                    <span class="text-sm font-semibold text-green-600 dark:text-green-400">
+                                        {{ formatCurrency(group.totalDuesAmount) }}
+                                    </span>
+                                </div>
+                            </div>
+
+                            <!-- Juz Recited -->
+                            <div v-if="group.juzData.length > 0">
+                                <h4 class="text-sm font-medium mb-2 text-purple-600 dark:text-purple-400">Juz yang Ditasmikkan:</h4>
+                                <div class="space-y-1 max-h-32 overflow-y-auto">
+                                    <div v-for="juzEntry in group.juzData" :key="juzEntry.name" class="text-xs bg-purple-100 dark:bg-purple-900/30 rounded px-2 py-1">
+                                        <span class="font-medium">{{ juzEntry.name }}:</span> {{ juzEntry.juz }}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `
+        };
+        
+        // Component: Main Attendance View
+        const AttendanceView = {
+            props: ['data'],
+            emits: ['update-data'],
+            setup(props, { emit }) {
+                const localData = ref(JSON.parse(JSON.stringify(props.data)));
+                const selectedGroupId = ref(null);
+                const selectedMonth = ref(getCurrentMonth());
+                
+                // Auto-create current month if it doesn't exist
+                if (!localData.value.monthlyAttendance[selectedMonth.value]) {
+                    localData.value.monthlyAttendance[selectedMonth.value] = {};
+                }
+
+                const availableMonths = computed(() => {
+                    const months = Object.keys(localData.value.monthlyAttendance).sort().reverse();
+                    // Ensure current month is always available
+                    const currentMonth = getCurrentMonth();
+                    if (!months.includes(currentMonth)) {
+                        months.unshift(currentMonth);
+                    }
+                    return months;
+                });
+
+                const selectedGroup = computed(() => {
+                    return localData.value.groups.find(g => g.id === selectedGroupId.value);
+                });
+
+                const groupLocation = computed(() => {
+                    if (!selectedGroup.value) return '';
+                    return getGroupLocationForMonth(localData.value, selectedMonth.value, selectedGroupId.value);
+                });
+
+                const membersWithAttendance = computed(() => {
+                    if (!selectedGroup.value) return [];
+                    
+                    return selectedGroup.value.members.map(member => {
+                        const attendance = getAttendanceForMonth(localData.value, selectedMonth.value, selectedGroupId.value, member.id);
+                        return {
+                            ...member,
+                            status: attendance.status || 'absent',
+                            paidDues: attendance.paidDues || false,
+                            juzRecited: attendance.juzRecited || ''
+                        };
+                    });
+                });
+
+                const updateAttendance = async (memberId, field, value) => {
+                    const currentAttendance = getAttendanceForMonth(localData.value, selectedMonth.value, selectedGroupId.value, memberId);
+                    const newAttendance = { ...currentAttendance, [field]: value };
+                    setAttendanceForMonth(localData.value, selectedMonth.value, selectedGroupId.value, memberId, newAttendance);
+                    await updateAndSave();
+                };
+
+                const updateGroupLocation = async (location) => {
+                    setGroupLocationForMonth(localData.value, selectedMonth.value, selectedGroupId.value, location);
+                    await updateAndSave();
+                };
+                
+                const updateAndSave = async () => {
+                    emit('update-data', localData.value);
+                };
+                
+                const resetAttendance = async () => {
+                    if (confirm(`Apakah Anda yakin ingin mereset semua data kehadiran, iuran, dan juz untuk ${getMonthName(selectedMonth.value)}?`)) {
+                        if (localData.value.monthlyAttendance[selectedMonth.value]) {
+                            localData.value.monthlyAttendance[selectedMonth.value] = {};
+                        }
+                        await updateAndSave();
+                    }
+                };
+
+                // Watch for month changes to ensure data exists
+                watch(selectedMonth, async (newMonth) => {
+                    if (!localData.value.monthlyAttendance[newMonth]) {
+                        localData.value.monthlyAttendance[newMonth] = {};
+                        await updateAndSave();
+                    }
+                });
+
+                const getStatusText = (status) => {
+                    switch(status) {
+                        case 'present': return 'Hadir';
+                        case 'sick': return 'Sakit';
+                        case 'permission': return 'Izin';
+                        default: return 'Tidak Hadir';
+                    }
+                };
+
+                return { 
+                    localData, 
+                    selectedGroupId, 
+                    selectedMonth,
+                    availableMonths,
+                    selectedGroup,
+                    groupLocation,
+                    membersWithAttendance,
+                    updateAttendance,
+                    updateGroupLocation,
+                    updateAndSave, 
+                    resetAttendance,
+                    getMonthName,
+                    getCurrentMonth,
+                    getStatusText
+                };
+            },
+            template: `
+                <div class="w-full max-w-5xl space-y-6">
+                    <!-- Group Selection -->
+                    <div v-if="!selectedGroupId" class="bg-white dark:bg-gray-800 rounded-xl shadow-lg p-8 text-center space-y-4">
+                        <h1 class="text-3xl font-bold text-gray-900 dark:text-white">Selamat Datang!</h1>
+                        <p class="text-gray-600 dark:text-gray-300">Silakan pilih kelompok Anda untuk memulai absensi.</p>
+                        <div v-if="data.groups.length === 0" class="text-gray-500 py-4">
+                            Belum ada kelompok yang dibuat. Silakan masuk sebagai admin untuk menambahkannya.
+                        </div>
+                        <div v-else class="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-4">
+                            <button v-for="group in data.groups" :key="group.id" @click="selectedGroupId = group.id"
+                                    class="p-6 bg-gray-50 dark:bg-gray-700 rounded-lg text-lg font-semibold hover:bg-blue-100 dark:hover:bg-blue-900/50 hover:ring-2 hover:ring-blue-500 transition">
+                                <div>{{ group.name }}</div>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Attendance List -->
+                    <div v-if="selectedGroup" class="bg-white dark:bg-gray-800 rounded-xl shadow-lg p-6 md:p-8 space-y-6">
+                        <div class="flex flex-col gap-4">
+                            <button @click="selectedGroupId = null" class="flex items-center gap-2 text-sm font-semibold text-gray-600 dark:text-gray-300 hover:text-blue-600 dark:hover:text-blue-400 transition self-start">
+                                <i data-lucide="arrow-left"></i>
+                                <span>Pilih Kelompok Lain</span>
+                            </button>
+                            
+                            <div class="flex flex-col sm:flex-row justify-between sm:items-center gap-4">
+                                <div>
+                                    <h2 class="text-2xl font-bold">{{ selectedGroup.name }}</h2>
+                                </div>
+                                <div class="flex flex-col sm:flex-row items-start sm:items-center gap-2">
+                                    <label class="text-sm font-medium text-gray-600 dark:text-gray-300">Pilih Bulan:</label>
+                                    <select v-model="selectedMonth" class="px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-2 focus:ring-blue-500 text-sm">
+                                        <option v-for="month in availableMonths" :key="month" :value="month">
+                                            {{ getMonthName(month) }}
+                                            <span v-if="month === getCurrentMonth()" class="text-blue-600"> (Bulan Ini)</span>
+                                        </option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <!-- Location Selection for the Group -->
+                            <div class="bg-blue-50 dark:bg-blue-900/20 p-4 rounded-lg">
+                                <div class="flex flex-col sm:flex-row items-start sm:items-center gap-3">
+                                    <label class="text-sm font-medium text-blue-800 dark:text-blue-300 flex items-center gap-2">
+                                        <i data-lucide="map-pin" class="w-4 h-4"></i>
+                                        Lokasi Tasmik Bulan Ini:
+                                    </label>
+                                    <select :value="groupLocation" @change="updateGroupLocation($event.target.value)" 
+                                            class="flex-1 px-3 py-2 rounded-lg border border-blue-300 dark:border-blue-600 bg-white dark:bg-gray-700 focus:ring-2 focus:ring-blue-500 text-sm">
+                                        <option value="">Pilih Lokasi</option>
+                                        <option v-for="location in localData.locations" :key="location.id" :value="location.name">
+                                            {{ location.name }}
+                                        </option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div v-if="selectedGroup.members.length === 0" class="text-center text-gray-500 py-8">
+                            Kelompok ini belum memiliki anggota.
+                        </div>
+                        
+                        <div v-else class="space-y-3">
+                            <!-- Header -->
+                            <div class="hidden lg:grid grid-cols-6 gap-4 items-center px-4">
+                                <span class="col-span-2 font-semibold">Nama Anggota</span>
+                                <span class="font-semibold text-center">Status</span>
+                                <span class="font-semibold text-center">Iuran</span>
+                                <span class="col-span-2 font-semibold">Juz yang Ditasmikkan</span>
+                            </div>
+                            <!-- Member List -->
+                            <div v-for="member in membersWithAttendance" :key="member.id" 
+                                 class="grid grid-cols-1 lg:grid-cols-6 gap-4 items-center p-4 rounded-lg bg-gray-50 dark:bg-gray-700/50">
+                                <!-- Name -->
+                                <div class="lg:col-span-2">
+                                    <span class="lg:hidden font-semibold text-gray-600 dark:text-gray-400">Nama: </span>
+                                    <span class="font-medium">{{ member.name }}</span>
+                                </div>
+                                <!-- Status Dropdown -->
+                                <div class="flex items-center gap-2">
+                                    <span class="lg:hidden font-semibold text-gray-600 dark:text-gray-400">Status: </span>
+                                    <select :value="member.status" @change="updateAttendance(member.id, 'status', $event.target.value)" 
+                                            class="w-full px-2 py-1 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-2 focus:ring-blue-500 text-sm">
+                                        <option value="absent">Tidak Hadir</option>
+                                        <option value="present">Hadir</option>
+                                        <option value="sick">Sakit</option>
+                                        <option value="permission">Izin</option>
+                                    </select>
+                                </div>
+                                <!-- Dues Checkbox -->
+                                <div class="flex items-center gap-2">
+                                    <span class="lg:hidden font-semibold text-gray-600 dark:text-gray-400">Iuran: </span>
+                                    <div class="flex justify-center lg:justify-center">
+                                        <input type="checkbox" 
+                                               :checked="member.paidDues" 
+                                               @change="updateAttendance(member.id, 'paidDues', $event.target.checked)" 
+                                               class="custom-checkbox h-6 w-6 rounded-md border-gray-300 dark:border-gray-500 text-green-500 focus:ring-green-500 cursor-pointer transition">
+                                    </div>
+                                </div>
+                                <!-- Juz Input -->
+                                <div class="lg:col-span-2">
+                                    <span class="lg:hidden font-semibold text-gray-600 dark:text-gray-400">Juz: </span>
+                                    <input type="text" 
+                                           :value="member.juzRecited" 
+                                           @input="updateAttendance(member.id, 'juzRecited', $event.target.value)"
+                                           placeholder="Contoh: Juz 1-3, Juz 5, dll..."
+                                           class="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 focus:ring-2 focus:ring-purple-500 text-sm">
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="pt-4 border-t border-gray-200 dark:border-gray-700">
+                             <button @click="resetAttendance" class="w-full flex items-center justify-center gap-2 py-2 px-4 border border-red-500 text-red-500 rounded-lg text-sm font-semibold hover:bg-red-500 hover:text-white transition">
+                                <i data-lucide="refresh-cw"></i>
+                                <span>Reset Semua Data {{ getMonthName(selectedMonth) }}</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `
+        };
+
+        // --- Main App ---
+        const App = {
+            components: { AdminLogin, AdminPanel, Dashboard, AttendanceView, SupabaseSetup },
+            setup() {
+                const appData = ref(null);
+                const currentView = ref('main'); // 'main', 'dashboard', 'adminLogin', 'adminPanel'
+                const isLoading = ref(true);
+                
+                // Initialize app
+                onMounted(async () => {
+                    try {
+                        const data = await loadData();
+                        
+                        // Initialize Supabase if config exists
+                        if (data.supabaseConfig?.url && data.supabaseConfig?.key) {
+                            initSupabase(data.supabaseConfig.url, data.supabaseConfig.key);
+                        }
+                        
+                        appData.value = data;
+                    } catch (error) {
+                        console.error('Failed to load data:', error);
+                        appData.value = initialData;
+                    } finally {
+                        isLoading.value = false;
+                    }
+
+                    // Initialize Lucide icons
+                    if (typeof lucide !== 'undefined') {
+                        lucide.createIcons();
+                    }
+                });
+
+                // Re-initialize icons when view changes
+                watch(currentView, () => {
+                    setTimeout(() => {
+                        if (typeof lucide !== 'undefined') {
+                            lucide.createIcons();
+                        }
+                    }, 100);
+                });
+                
+                const updateData = async (newData) => {
+                    appData.value = newData;
+                    await saveData(newData);
+                };
+
+                const handleLoginSuccess = () => {
+                    currentView.value = 'adminPanel';
+                };
+                
+                const handleLogout = () => {
+                    currentView.value = 'main';
+                };
+
+                return {
+                    appData,
+                    currentView,
+                    isLoading,
+                    updateData,
+                    handleLoginSuccess,
+                    handleLogout
+                };
+            },
+            template: `
+                <div class="w-full max-w-6xl mx-auto">
+                    <!-- Loading State -->
+                    <div v-if="isLoading" class="flex items-center justify-center py-16">
+                        <div class="text-center">
+                            <div class="animate-spin w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full mx-auto mb-4"></div>
+                            <p class="text-gray-600 dark:text-gray-400">Memuat aplikasi...</p>
+                        </div>
+                    </div>
+
+                    <template v-else>
+                        <!-- Navigation -->
+                        <nav class="w-full max-w-xs mx-auto mb-6 bg-white/70 dark:bg-gray-800/70 backdrop-blur-sm p-2 rounded-full shadow-md flex justify-around items-center" v-if="currentView === 'main' || currentView === 'dashboard'">
+                            <button @click="currentView = 'main'" :class="['flex-1 py-2 px-4 rounded-full text-sm font-semibold transition', currentView === 'main' ? 'bg-blue-600 text-white shadow' : 'text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700']">
+                                Absensi
+                            </button>
+                            <button @click="currentView = 'dashboard'" :class="['flex-1 py-2 px-4 rounded-full text-sm font-semibold transition', currentView === 'dashboard' ? 'bg-blue-600 text-white shadow' : 'text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700']">
+                                Dashboard
+                            </button>
+                        </nav>
+
+                        <!-- View Container -->
+                        <transition name="fade" mode="out-in">
+                            <div :key="currentView" class="w-full flex justify-center">
+                                <AttendanceView v-if="currentView === 'main'" :data="appData" @update-data="updateData" />
+                                <Dashboard v-if="currentView === 'dashboard'" :data="appData" />
+                                <AdminLogin v-if="currentView === 'adminLogin'" @login-success="handleLoginSuccess" @back="currentView = 'main'" />
+                                <AdminPanel v-if="currentView === 'adminPanel'" :data="appData" @update-data="updateData" @logout="handleLogout" />
+                            </div>
+                        </transition>
+
+                        <!-- Admin Login Button -->
+                        <div class="fixed bottom-5 right-5">
+                            <button @click="currentView = 'adminLogin'" class="p-3 bg-white dark:bg-gray-700 rounded-full shadow-lg hover:bg-gray-200 dark:hover:bg-gray-600 transition" title="Login Admin">
+                                <i data-lucide="user-cog" class="text-gray-700 dark:text-gray-200"></i>
+                            </button>
+                        </div>
+                    </template>
+                </div>
+            `
+        };
+
+        const app = createApp(App);
+        app.mount('#app');
+
+    </script>
+</body>
+</html>
